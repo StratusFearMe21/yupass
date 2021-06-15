@@ -21,6 +21,9 @@ struct PasswordOpts {
     /// Cuts password to certain length
     #[structopt(short)]
     length: Option<u8>,
+    /// Notes about the given password
+    #[structopt(short)]
+    notes: String,
 }
 
 #[derive(StructOpt)]
@@ -33,6 +36,11 @@ enum Opts {
     },
     /// Get a password using DMenu
     Get,
+    /// Get the notes of a given password
+    Notes {
+        /// The title of the password you want to look up
+        title: String,
+    },
     /// Add a password
     Add {
         /// Username of the account in question
@@ -82,6 +90,7 @@ fn main() -> Result<(), Error> {
                 .write_all(passwords.get(passopt).unwrap().username.as_bytes())
                 .unwrap();
         }
+        Opts::Notes { title } => println!("{}", get_passwords()?.get(&title).unwrap().notes),
         Opts::Add { title, password } => {
             let mut passwords = get_passwords()?;
             passwords.insert(title, password);
