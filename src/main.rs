@@ -22,8 +22,8 @@ struct PasswordOpts {
     #[structopt(short)]
     length: Option<u8>,
     /// Notes about the given password
-    #[structopt(short)]
-    notes: String,
+    #[structopt(long)]
+    notes: Option<String>,
 }
 
 #[derive(StructOpt)]
@@ -60,7 +60,11 @@ fn main() -> Result<(), Error> {
     let opts = Opts::from_args();
     match opts {
         Opts::Init { key } => {
-            std::fs::write("/home/isaacm/.yupasskey", &key).unwrap();
+            std::fs::write(
+                format!("{}/.yupasskey", dirs::home_dir().unwrap().display()),
+                &key,
+            )
+            .unwrap();
             encrypt_passwords(HashMap::new(), key)?;
             println!("Passwords initialized");
         }
@@ -90,13 +94,27 @@ fn main() -> Result<(), Error> {
                 .write_all(passwords.get(passopt).unwrap().username.as_bytes())
                 .unwrap();
         }
-        Opts::Notes { title } => println!("{}", get_passwords()?.get(&title).unwrap().notes),
+        Opts::Notes { title } => {
+            println!(
+                "{}",
+                get_passwords()?
+                    .get(&title)
+                    .unwrap()
+                    .notes
+                    .clone()
+                    .unwrap_or("No Notes".to_string())
+            )
+        }
         Opts::Add { title, password } => {
             let mut passwords = get_passwords()?;
             passwords.insert(title, password);
             encrypt_passwords(
                 passwords,
-                std::fs::read_to_string("/home/isaacm/.yupasskey").unwrap(),
+                std::fs::read_to_string(format!(
+                    "{}/.yupasskey",
+                    dirs::home_dir().unwrap().display()
+                ))
+                .unwrap(),
             )?;
         }
         Opts::Remove { title } => {
@@ -104,7 +122,11 @@ fn main() -> Result<(), Error> {
             passwords.remove(&title).unwrap();
             encrypt_passwords(
                 passwords,
-                std::fs::read_to_string("/home/isaacm/.yupasskey").unwrap(),
+                std::fs::read_to_string(format!(
+                    "{}/.yupasskey",
+                    dirs::home_dir().unwrap().display()
+                ))
+                .unwrap(),
             )?;
         }
     }
@@ -114,9 +136,12 @@ fn main() -> Result<(), Error> {
 fn get_passwords() -> Result<HashMap<String, PasswordOpts>, Error> {
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
-    let mut input = File::open("/home/isaacm/.yupass.asc")
-        .map_err(|e| format!("can't open file `/home/isaacm/.yupass.asc': {:?}", e))
-        .unwrap();
+    let mut input = File::open(format!(
+        "{}/.yupass.asc",
+        dirs::home_dir().unwrap().display()
+    ))
+    .map_err(|e| format!("can't open file `~/.yupass.asc': {:?}", e))
+    .unwrap();
     let mut outbuf = Vec::new();
     ctx.decrypt(&mut input, &mut outbuf)
         .map_err(|e| format!("decrypting failed: {:?}", e))
@@ -125,11 +150,16 @@ fn get_passwords() -> Result<HashMap<String, PasswordOpts>, Error> {
 }
 
 fn encrypt_passwords(passwords: HashMap<String, PasswordOpts>, key: String) -> Result<(), Error> {
-    let mut file = File::create("/home/isaacm/.yupass.asc").unwrap();
+    let mut file = File::create(format!(
+        "{}/.yupass.asc",
+        dirs::home_dir().unwrap().display()
+    ))
+    .unwrap();
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
     let keys: Vec<Key> = ctx.find_keys(vec![key])?.filter_map(|x| x.ok()).collect();
-    ctx.encrypt(&keys, bincode::serialize(&passwords).unwrap(), &mut file)
+    let serialize = bincode::serialize(&passwords).unwrap();
+    ctx.encrypt(&keys, serialize, &mut file)
         .map_err(|e| format!("encrypting failed: {:?}", e))
         .unwrap();
     Ok(())

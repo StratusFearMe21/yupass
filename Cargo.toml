@@ -13,3 +13,4 @@ serde = { version = "*", features = ["derive"] }
 dmenu_facade = "*"
 structopt = "*"
 enigo = "*"
+dirs = "*"
