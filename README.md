@@ -6,7 +6,7 @@ This is a Linux password manager powered by the YubiKey's HMAC-SHA1 challenge re
 
 *   \[ ] Cloud syncing
 *   \[ ] Cross platform (Windows, MacOS, Linux, Android)
-*   \[ ] Notes
+*   \[x] Notes
 
 # DISCLAIMER: I AM NOT A CYBERSECURITY EXPERT
 
