@@ -17,7 +17,7 @@ struct PasswordOpts {
     username: String,
     /// Whether or not to remove symbols from passwords
     #[structopt(short)]
-    nosymbols: bool,
+    no_symbols: bool,
     /// Cuts password to certain length
     #[structopt(short)]
     length: Option<u8>,
@@ -72,15 +72,18 @@ fn main() -> Result<(), Error> {
             let passwords = get_passwords()?;
             let passkeys: Vec<String> = passwords.keys().cloned().collect();
             let passopt = DMenu::default().execute(&passkeys).unwrap();
+            let command = Command::new("ykchalresp")
+                .arg("-2")
+                .arg(passopt)
+                .output()
+                .unwrap()
+                .stdout;
             enigo::Enigo::new().key_sequence(
-                &String::from_utf8(
-                    Command::new("ykchalresp")
-                        .arg("-2")
-                        .arg(passopt)
-                        .output()
-                        .unwrap()
-                        .stdout,
-                )
+                &String::from_utf8(if passwords.get(passopt).unwrap().no_symbols {
+                    base91::slice_encode(command.as_slice())
+                } else {
+                    command
+                })
                 .unwrap(),
             );
 
@@ -107,6 +110,7 @@ fn main() -> Result<(), Error> {
         }
         Opts::Add { title, password } => {
             let mut passwords = get_passwords()?;
+            println!("{:?}", passwords);
             passwords.insert(title, password);
             encrypt_passwords(
                 passwords,

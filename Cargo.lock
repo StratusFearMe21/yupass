@@ -21,6 +21,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base91"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cc971dad342555038de31a76cb3eb3d454a15bc65dac9e3024bbec9fa598cec"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -507,6 +513,7 @@ dependencies = [
 name = "yupass"
 version = "0.1.0"
 dependencies = [
+ "base91",
  "bincode",
  "dirs",
  "dmenu_facade",
