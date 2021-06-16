@@ -10,8 +10,6 @@ edition = "2018"
 gpgme = "*"
 bincode = "*"
 serde = { version = "*", features = ["derive"] }
-dmenu_facade = "*"
 structopt = "*"
 enigo = "*"
 dirs = "*"
-base91 = "*"

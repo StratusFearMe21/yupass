@@ -1,15 +1,22 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::Write,
+    io::{Read, Write},
     process::{Command, Stdio},
 };
 
-use dmenu_facade::DMenu;
 use enigo::KeyboardControllable;
 use gpgme::{Context, Error, Key, Protocol};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
+
+const ENTAB: [char; 91] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
+    'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4',
+    '5', '6', '7', '8', '9', '!', '#', '$', '%', '&', '(', ')', '*', '+', ',', '.', '/', ':', ';',
+    '<', '=', '>', '?', '@', '[', ']', '^', '_', '`', '{', '|', '}', '~', '"',
+];
 
 #[derive(Serialize, Deserialize, Debug, StructOpt)]
 struct PasswordOpts {
@@ -43,7 +50,7 @@ enum Opts {
     },
     /// Add a password
     Add {
-        /// Username of the account in question
+        /// The title of the account in question
         title: String,
         /// Password of the account in question
         #[structopt(flatten)]
@@ -70,23 +77,23 @@ fn main() -> Result<(), Error> {
         }
         Opts::Get => {
             let passwords = get_passwords()?;
-            let passkeys: Vec<String> = passwords.keys().cloned().collect();
-            let passopt = DMenu::default().execute(&passkeys).unwrap();
-            let command = Command::new("ykchalresp")
-                .arg("-2")
-                .arg(passopt)
-                .output()
+            let passkeys: String = passwords.keys().map(|f| format!("{}\n", f)).collect();
+            let passproc = Command::new("dmenu")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            passproc
+                .stdin
                 .unwrap()
-                .stdout;
-            enigo::Enigo::new().key_sequence(
-                &String::from_utf8(if !passwords.get(passopt).unwrap().no_symbols {
-                    base91::slice_encode(command.as_slice())
-                } else {
-                    command
-                })
-                .unwrap(),
-            );
-
+                .write_all(passkeys.as_bytes())
+                .unwrap();
+            let mut passoptraw = String::new();
+            passproc
+                .stdout
+                .unwrap()
+                .read_to_string(&mut passoptraw)
+                .unwrap();
             Command::new("xsel")
                 .arg("-b")
                 .stdin(Stdio::piped())
@@ -94,8 +101,49 @@ fn main() -> Result<(), Error> {
                 .unwrap()
                 .stdin
                 .unwrap()
-                .write_all(passwords.get(passopt).unwrap().username.as_bytes())
+                .write_all(
+                    passwords
+                        .get(passoptraw.trim())
+                        .unwrap()
+                        .username
+                        .as_bytes(),
+                )
                 .unwrap();
+            let mut keyboard = enigo::Enigo::new();
+            let mut key: u32;
+            let mut rem: u32 = 0;
+            let mut shift: u32 = 0;
+            for c in String::from_utf8(
+                Command::new("ykchalresp")
+                    .arg("-2")
+                    .arg(&passoptraw)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+            .trim()
+            .chars()
+            {
+                rem |= (c as u32) << shift;
+                shift += 8;
+
+                if shift > 13 {
+                    key = rem & 8191;
+
+                    if key > 88 {
+                        rem >>= 13;
+                        shift -= 13;
+                    } else {
+                        key = rem & 16383;
+                        rem >>= 14;
+                        shift -= 14;
+                    }
+
+                    keyboard.key_click(enigo::Key::Layout(ENTAB[(key % 91) as usize]));
+                    keyboard.key_click(enigo::Key::Layout(ENTAB[(key / 91) as usize]));
+                }
+            }
         }
         Opts::Notes { title } => {
             println!(
