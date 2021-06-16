@@ -79,7 +79,7 @@ fn main() -> Result<(), Error> {
                 .unwrap()
                 .stdout;
             enigo::Enigo::new().key_sequence(
-                &String::from_utf8(if passwords.get(passopt).unwrap().no_symbols {
+                &String::from_utf8(if !passwords.get(passopt).unwrap().no_symbols {
                     base91::slice_encode(command.as_slice())
                 } else {
                     command
@@ -109,8 +109,8 @@ fn main() -> Result<(), Error> {
             )
         }
         Opts::Add { title, password } => {
+            println!("{:?}", password);
             let mut passwords = get_passwords()?;
-            println!("{:?}", passwords);
             passwords.insert(title, password);
             encrypt_passwords(
                 passwords,
