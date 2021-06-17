@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{Read, Write},
+    io::Write,
+    ops::Deref,
     process::{Command, Stdio},
 };
 
@@ -9,6 +10,10 @@ use enigo::KeyboardControllable;
 use gpgme::{Context, Error, Key, Protocol};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
+use yubico_manager::{
+    config::{Config, Mode, Slot},
+    Yubico,
+};
 
 const ENTAB: [char; 91] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
@@ -25,9 +30,9 @@ struct PasswordOpts {
     /// Whether or not to remove symbols from passwords
     #[structopt(short)]
     no_symbols: bool,
-    /// Cuts password to certain length
-    #[structopt(short)]
-    length: Option<u8>,
+    /// Number of iterations to give password
+    #[structopt(short, default_value = "5")]
+    length: u8,
     /// Notes about the given password
     #[structopt(long)]
     notes: Option<String>,
@@ -48,7 +53,7 @@ enum Opts {
         /// The title of the password you want to look up
         title: String,
     },
-    /// Add a password
+    /// Add or edit a password
     Add {
         /// The title of the account in question
         title: String,
@@ -77,23 +82,19 @@ fn main() -> Result<(), Error> {
         }
         Opts::Get => {
             let passwords = get_passwords()?;
-            let passkeys: String = passwords.keys().map(|f| format!("{}\n", f)).collect();
-            let passproc = Command::new("dmenu")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            passproc
-                .stdin
-                .unwrap()
-                .write_all(passkeys.as_bytes())
-                .unwrap();
-            let mut passoptraw = String::new();
-            passproc
-                .stdout
-                .unwrap()
-                .read_to_string(&mut passoptraw)
-                .unwrap();
+            let mut yubi = Yubico::new();
+            let device = yubi.find_yubikey().unwrap();
+            let passopt = String::from_utf8(
+                Command::new("zenity")
+                    .arg("--list")
+                    .arg("--column=Select Account")
+                    .args(passwords.keys())
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
+            let passstruct = passwords.get(passopt.trim()).unwrap();
             Command::new("xsel")
                 .arg("-b")
                 .stdin(Stdio::piped())
@@ -101,47 +102,44 @@ fn main() -> Result<(), Error> {
                 .unwrap()
                 .stdin
                 .unwrap()
-                .write_all(
-                    passwords
-                        .get(passoptraw.trim())
-                        .unwrap()
-                        .username
-                        .as_bytes(),
-                )
+                .write_all(passstruct.username.as_bytes())
                 .unwrap();
             let mut keyboard = enigo::Enigo::new();
             let mut key: u32;
             let mut rem: u32 = 0;
             let mut shift: u32 = 0;
-            for c in String::from_utf8(
-                Command::new("ykchalresp")
-                    .arg("-2")
-                    .arg(&passoptraw)
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap()
-            .trim()
-            .chars()
-            {
-                rem |= (c as u32) << shift;
-                shift += 8;
+            let hmac_result = yubi
+                .challenge_response_hmac(
+                    passopt.as_bytes(),
+                    Config::default()
+                        .set_vendor_id(device.vendor_id)
+                        .set_product_id(device.product_id)
+                        .set_variable_size(true)
+                        .set_mode(Mode::Sha1)
+                        .set_slot(Slot::Slot2),
+                )
+                .unwrap();
 
-                if shift > 13 {
-                    key = rem & 8191;
+            for _ in 0..passstruct.length {
+                for c in hmac_result.deref() {
+                    rem |= (c.to_owned() as u32) << shift;
+                    shift += 8;
 
-                    if key > 88 {
-                        rem >>= 13;
-                        shift -= 13;
-                    } else {
-                        key = rem & 16383;
-                        rem >>= 14;
-                        shift -= 14;
+                    if shift > 13 {
+                        key = rem & 8191;
+
+                        if key > 88 {
+                            rem >>= 13;
+                            shift -= 13;
+                        } else {
+                            key = rem & 16383;
+                            rem >>= 14;
+                            shift -= 14;
+                        }
+
+                        keyboard.key_click(enigo::Key::Layout(ENTAB[(key % 91) as usize]));
+                        keyboard.key_click(enigo::Key::Layout(ENTAB[(key / 91) as usize]));
                     }
-
-                    keyboard.key_click(enigo::Key::Layout(ENTAB[(key % 91) as usize]));
-                    keyboard.key_click(enigo::Key::Layout(ENTAB[(key / 91) as usize]));
                 }
             }
         }
