@@ -13,3 +13,9 @@ serde = { version = "*", features = ["derive"] }
 structopt = "*"
 enigo = "*"
 dirs = "*"
+yubico_manager = "*"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
