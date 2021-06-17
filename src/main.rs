@@ -1,10 +1,7 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::Write,
-    ops::Deref,
-    process::{Command, Stdio},
-};
+use std::{collections::HashMap, fs::File, ops::Deref, process::Command};
+
+#[cfg(not(windows))]
+use copypasta_ext::prelude::ClipboardProvider;
 
 use enigo::KeyboardControllable;
 use gpgme::{Context, Error, Key, Protocol};
@@ -95,15 +92,18 @@ fn main() -> Result<(), Error> {
             )
             .unwrap();
             let passstruct = passwords.get(passopt.trim()).unwrap();
-            Command::new("xsel")
-                .arg("-b")
-                .stdin(Stdio::piped())
-                .spawn()
-                .unwrap()
-                .stdin
-                .unwrap()
-                .write_all(passstruct.username.as_bytes())
-                .unwrap();
+            #[cfg(not(windows))]
+            {
+                let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
+                ctx.set_contents(passstruct.username.to_owned()).unwrap();
+            }
+
+            #[cfg(windows)]
+            {
+                clipboard_win::set_clipboard(clipboard_win::formats::Unicode, &passstruct.username)
+                    .unwrap();
+            }
+
             let mut keyboard = enigo::Enigo::new();
             let mut key: u32;
             let mut rem: u32 = 0;
