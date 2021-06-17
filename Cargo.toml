@@ -15,6 +15,12 @@ enigo = "*"
 dirs = "*"
 yubico_manager = "*"
 
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "4.2.1"
+
+[target.'cfg(not(windows))'.dependencies]
+copypasta-ext = "*"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
