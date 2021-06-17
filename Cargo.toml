@@ -7,13 +7,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gpgme = "*"
 bincode = "*"
 serde = { version = "*", features = ["derive"] }
 structopt = "*"
 enigo = "*"
 dirs = "*"
 yubico_manager = "*"
+gpgme = "*"
+anyhow = "*"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "4.2.1"

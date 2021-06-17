@@ -4,7 +4,9 @@ use std::{collections::HashMap, fs::File, ops::Deref, process::Command};
 use copypasta_ext::prelude::ClipboardProvider;
 
 use enigo::KeyboardControllable;
-use gpgme::{Context, Error, Key, Protocol};
+
+use gpgme::{Context, Key, Protocol};
+
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use yubico_manager::{
@@ -65,7 +67,7 @@ enum Opts {
     },
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> anyhow::Result<()> {
     let opts = Opts::from_args();
     match opts {
         Opts::Init { key } => {
@@ -183,34 +185,27 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn get_passwords() -> Result<HashMap<String, PasswordOpts>, Error> {
+fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
     let mut input = File::open(format!(
         "{}/.yupass.asc",
         dirs::home_dir().unwrap().display()
-    ))
-    .map_err(|e| format!("can't open file `~/.yupass.asc': {:?}", e))
-    .unwrap();
+    ))?;
     let mut outbuf = Vec::new();
-    ctx.decrypt(&mut input, &mut outbuf)
-        .map_err(|e| format!("decrypting failed: {:?}", e))
-        .unwrap();
+    ctx.decrypt(&mut input, &mut outbuf)?;
     Ok(bincode::deserialize(outbuf.as_slice()).unwrap())
 }
 
-fn encrypt_passwords(passwords: HashMap<String, PasswordOpts>, key: String) -> Result<(), Error> {
+fn encrypt_passwords(passwords: HashMap<String, PasswordOpts>, key: String) -> anyhow::Result<()> {
     let mut file = File::create(format!(
         "{}/.yupass.asc",
         dirs::home_dir().unwrap().display()
-    ))
-    .unwrap();
+    ))?;
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
     let keys: Vec<Key> = ctx.find_keys(vec![key])?.filter_map(|x| x.ok()).collect();
-    let serialize = bincode::serialize(&passwords).unwrap();
-    ctx.encrypt(&keys, serialize, &mut file)
-        .map_err(|e| format!("encrypting failed: {:?}", e))
-        .unwrap();
+    let serialize = bincode::serialize(&passwords)?;
+    ctx.encrypt(&keys, serialize, &mut file)?;
     Ok(())
 }
