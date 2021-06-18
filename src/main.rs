@@ -35,6 +35,9 @@ struct PasswordOpts {
     /// Notes about the given password
     #[structopt(long)]
     notes: Option<String>,
+    /// Cut the password to a certain length
+    #[structopt(short)]
+    cut: Option<usize>,
 }
 
 #[derive(StructOpt)]
@@ -94,55 +97,84 @@ fn main() -> anyhow::Result<()> {
             )
             .unwrap();
             let passstruct = passwords.get(passopt.trim()).unwrap();
-            #[cfg(not(windows))]
-            {
-                let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
-                ctx.set_contents(passstruct.username.to_owned()).unwrap();
-            }
 
             #[cfg(windows)]
             {
-                clipboard_win::set_clipboard(clipboard_win::formats::Unicode, &passstruct.username)
-                    .unwrap();
+                unimplemented!("Windows support coming soon!");
             }
 
-            let mut keyboard = enigo::Enigo::new();
-            let mut key: u32;
-            let mut rem: u32 = 0;
-            let mut shift: u32 = 0;
-            let hmac_result = yubi
-                .challenge_response_hmac(
-                    passopt.as_bytes(),
-                    Config::default()
-                        .set_vendor_id(device.vendor_id)
-                        .set_product_id(device.product_id)
-                        .set_variable_size(true)
-                        .set_mode(Mode::Sha1)
-                        .set_slot(Slot::Slot2),
-                )
-                .unwrap();
+            #[cfg(not(windows))]
+            {
+                let mut keyboard = enigo::Enigo::new();
 
-            for _ in 0..passstruct.length {
-                for c in hmac_result.deref() {
-                    rem |= (c.to_owned() as u32) << shift;
-                    shift += 8;
+                let hmac_result = yubi
+                    .challenge_response_hmac(
+                        passopt.as_bytes(),
+                        Config::default()
+                            .set_vendor_id(device.vendor_id)
+                            .set_product_id(device.product_id)
+                            .set_variable_size(true)
+                            .set_mode(Mode::Sha1)
+                            .set_slot(Slot::Slot2),
+                    )
+                    .unwrap();
 
-                    if shift > 13 {
-                        key = rem & 8191;
+                let mut final_result = String::new();
+                let mut typed = 0;
 
-                        if key > 88 {
-                            rem >>= 13;
-                            shift -= 13;
-                        } else {
-                            key = rem & 16383;
-                            rem >>= 14;
-                            shift -= 14;
+                match passstruct.no_symbols {
+                    false => {
+                        let mut key: u32;
+                        let mut rem: u32 = 0;
+                        let mut shift: u32 = 0;
+
+                        'a: for _ in 0..passstruct.length {
+                            for c in hmac_result.deref() {
+                                rem |= (c.to_owned() as u32) << shift;
+                                shift += 8;
+
+                                if shift > 13 {
+                                    key = rem & 8191;
+
+                                    if key > 88 {
+                                        rem >>= 13;
+                                        shift -= 13;
+                                    } else {
+                                        key = rem & 16383;
+                                        rem >>= 14;
+                                        shift -= 14;
+                                    }
+
+                                    final_result.push(ENTAB[(key % 91) as usize]);
+                                    final_result.push(ENTAB[(key / 91) as usize]);
+                                    typed += 2;
+                                }
+
+                                if passstruct.cut.is_some() && passstruct.cut.unwrap() >= typed {
+                                    break 'a;
+                                }
+                            }
                         }
-
-                        keyboard.key_click(enigo::Key::Layout(ENTAB[(key % 91) as usize]));
-                        keyboard.key_click(enigo::Key::Layout(ENTAB[(key / 91) as usize]));
+                    }
+                    true => {
+                        if let Some(len) = passstruct.cut {
+                            let mut base64str = base64::encode(hmac_result.deref());
+                            base64str.truncate(len);
+                            final_result = base64str;
+                        } else {
+                            final_result = base64::encode(hmac_result.deref());
+                        }
                     }
                 }
+
+                let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
+                ctx.set_contents(final_result).unwrap();
+
+                keyboard.key_down(enigo::Key::Control);
+                keyboard.key_click(enigo::Key::Layout('v'));
+                keyboard.key_up(enigo::Key::Control);
+
+                ctx.set_contents(passstruct.username.to_owned()).unwrap();
             }
         }
         Opts::Notes { title } => {
