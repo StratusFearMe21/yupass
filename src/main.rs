@@ -195,7 +195,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
-    let opts: YuPassOpts = bincode::deserialize(
+    let mut opts: YuPassOpts = bincode::deserialize(
         std::fs::read(format!(
             "{}/.yupassopts",
             dirs::home_dir().unwrap().display()
@@ -203,7 +203,7 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
         .as_slice(),
     )?;
     let mut input;
-    match opts.server {
+    match &opts.server {
         Some(server) => {
             let rev: u32 = reqwest::blocking::get(format!("{}/rev", server))?
                 .text()?
@@ -216,6 +216,11 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
                 std::fs::write(
                     format!("{}/.yupass.asc", dirs::home_dir().unwrap().display()),
                     &pgp,
+                )?;
+                opts.rev = rev;
+                std::fs::write(
+                    format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                    bincode::serialize(&opts)?,
                 )?;
                 input = pgp;
             } else {
