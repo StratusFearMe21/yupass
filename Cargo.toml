@@ -16,6 +16,7 @@ yubico_manager = "*"
 base64 = "*"
 gpgme = "*"
 reqwest = { version = "*", features = ["blocking"] }
+console = "*"
 anyhow = "*"
 
 [target.'cfg(windows)'.dependencies]

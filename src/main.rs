@@ -1,4 +1,10 @@
-use std::{collections::HashMap, ops::Deref, process::Command};
+use console::style;
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    ops::Deref,
+    process::{Command, Stdio},
+};
 
 #[cfg(not(windows))]
 use copypasta_ext::prelude::ClipboardProvider;
@@ -22,7 +28,7 @@ const ENTAB: [char; 91] = [
     '<', '=', '>', '?', '@', '[', ']', '^', '_', '`', '{', '|', '}', '~', '"',
 ];
 
-#[derive(Serialize, Deserialize, Debug, StructOpt)]
+#[derive(Serialize, Deserialize, StructOpt)]
 struct PasswordOpts {
     /// Usesrname of the account in question
     username: String,
@@ -40,7 +46,47 @@ struct PasswordOpts {
     cut: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, StructOpt, Debug)]
+impl PasswordOpts {
+    fn print_opts(&self) {
+        println!("{}", style("---------").bold());
+        println!("Username: {}", self.username);
+        println!(
+            "{}",
+            if self.no_symbols {
+                style("No Symbols: true").bold()
+            } else {
+                style("No Symbols: false")
+            }
+        );
+        println!(
+            "{}",
+            if self.length != 5 {
+                style(format!("Length: {}", self.length)).bold()
+            } else {
+                style(format!("Length: {}", self.length))
+            }
+        );
+        println!(
+            "{}",
+            if let Some(notes) = &self.notes {
+                style(format!("Notes: {}", notes)).bold()
+            } else {
+                style("Notes: None".to_string())
+            }
+        );
+        println!(
+            "{}",
+            if let Some(cut) = self.cut {
+                style(format!("Cut: {}", cut)).bold()
+            } else {
+                style("Cut: None".to_string())
+            }
+        );
+        println!("{}", style("---------").bold());
+    }
+}
+
+#[derive(Serialize, Deserialize, StructOpt)]
 struct YuPassOpts {
     /// If using a syncing server, which one to use
     #[structopt(short)]
@@ -48,6 +94,22 @@ struct YuPassOpts {
     key: String,
     #[structopt(skip)]
     rev: u32,
+}
+
+impl YuPassOpts {
+    fn print_opts(&self) {
+        println!("{}", style("---------").bold());
+        println!("Key: {}", self.key);
+        println!(
+            "{}",
+            if let Some(server) = &self.server {
+                style(format!("Server: {}", server)).bold()
+            } else {
+                style("Server: None".to_string())
+            }
+        );
+        println!("{}", style("---------").bold());
+    }
 }
 
 #[derive(StructOpt)]
@@ -95,33 +157,35 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(
                 format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
                 bincode::serialize(&opts)?,
-            )
-            .unwrap();
-            println!("{:?}", &opts);
+            )?;
+            opts.print_opts();
+            encrypt_passwords(HashMap::new(), opts)?;
         }
         Opts::Sync { opts } => {
             std::fs::write(
                 format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
                 bincode::serialize(&opts)?,
-            )
-            .unwrap();
+            )?;
             get_passwords()?;
         }
         Opts::Get => {
             let passwords = get_passwords()?;
             let mut yubi = Yubico::new();
-            let device = yubi.find_yubikey().unwrap();
-            let passopt = String::from_utf8(
-                Command::new("zenity")
-                    .arg("--list")
-                    .arg("--column=Select Account")
-                    .args(passwords.keys())
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap();
-            println!("{}", passopt);
+            let device = yubi.find_yubikey()?;
+            let passproc = Command::new("dmenu")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?;
+            passproc.stdin.unwrap().write_all(
+                passwords
+                    .keys()
+                    .into_iter()
+                    .map(|f| format!("{}\n", f))
+                    .collect::<String>()
+                    .as_bytes(),
+            )?;
+            let mut passopt = String::new();
+            passproc.stdout.unwrap().read_to_string(&mut passopt)?;
             let passstruct = passwords.get(passopt.trim()).unwrap();
 
             #[cfg(windows)]
@@ -133,17 +197,15 @@ fn main() -> anyhow::Result<()> {
             {
                 let mut keyboard = enigo::Enigo::new();
 
-                let hmac_result = yubi
-                    .challenge_response_hmac(
-                        passopt.as_bytes(),
-                        Config::default()
-                            .set_vendor_id(device.vendor_id)
-                            .set_product_id(device.product_id)
-                            .set_variable_size(true)
-                            .set_mode(Mode::Sha1)
-                            .set_slot(Slot::Slot2),
-                    )
-                    .unwrap();
+                let hmac_result = yubi.challenge_response_hmac(
+                    passopt.as_bytes(),
+                    Config::default()
+                        .set_vendor_id(device.vendor_id)
+                        .set_product_id(device.product_id)
+                        .set_variable_size(true)
+                        .set_mode(Mode::Sha1)
+                        .set_slot(Slot::Slot2),
+                )?;
 
                 let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
                 ctx.set_contents(encode_password(
@@ -175,7 +237,7 @@ fn main() -> anyhow::Result<()> {
             )
         }
         Opts::Add { title, password } => {
-            println!("{:?}", password);
+            password.print_opts();
             let mut passwords = get_passwords()?;
             passwords.insert(title, password);
             encrypt_passwords(
@@ -258,7 +320,7 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
     ctx.set_armor(true);
     let mut outbuf = Vec::new();
     ctx.decrypt(&mut input, &mut outbuf)?;
-    Ok(bincode::deserialize(outbuf.as_slice()).unwrap())
+    Ok(bincode::deserialize(outbuf.as_slice())?)
 }
 
 fn encrypt_passwords(
