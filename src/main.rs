@@ -96,6 +96,7 @@ fn main() -> anyhow::Result<()> {
                     .stdout,
             )
             .unwrap();
+            println!("{}", passopt);
             let passstruct = passwords.get(passopt.trim()).unwrap();
 
             #[cfg(windows)]
@@ -119,60 +120,20 @@ fn main() -> anyhow::Result<()> {
                     )
                     .unwrap();
 
-                let mut final_result = String::new();
-                let mut typed = 0;
-
-                match passstruct.no_symbols {
-                    false => {
-                        let mut key: u32;
-                        let mut rem: u32 = 0;
-                        let mut shift: u32 = 0;
-
-                        'a: for _ in 0..passstruct.length {
-                            for c in hmac_result.deref() {
-                                rem |= (c.to_owned() as u32) << shift;
-                                shift += 8;
-
-                                if shift > 13 {
-                                    key = rem & 8191;
-
-                                    if key > 88 {
-                                        rem >>= 13;
-                                        shift -= 13;
-                                    } else {
-                                        key = rem & 16383;
-                                        rem >>= 14;
-                                        shift -= 14;
-                                    }
-
-                                    final_result.push(ENTAB[(key % 91) as usize]);
-                                    final_result.push(ENTAB[(key / 91) as usize]);
-                                    typed += 2;
-                                }
-
-                                if passstruct.cut.is_some() && passstruct.cut.unwrap() >= typed {
-                                    break 'a;
-                                }
-                            }
-                        }
-                    }
-                    true => {
-                        if let Some(len) = passstruct.cut {
-                            let mut base64str = base64::encode(hmac_result.deref());
-                            base64str.truncate(len);
-                            final_result = base64str;
-                        } else {
-                            final_result = base64::encode(hmac_result.deref());
-                        }
-                    }
-                }
-
                 let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
-                ctx.set_contents(final_result).unwrap();
+                ctx.set_contents(encode_password(
+                    hmac_result.deref(),
+                    passstruct.length,
+                    passstruct.cut,
+                    passstruct.no_symbols,
+                )?)
+                .unwrap();
 
                 keyboard.key_down(enigo::Key::Control);
                 keyboard.key_click(enigo::Key::Layout('v'));
                 keyboard.key_up(enigo::Key::Control);
+
+                std::thread::sleep(std::time::Duration::from_millis(100));
 
                 ctx.set_contents(passstruct.username.to_owned()).unwrap();
             }
@@ -240,4 +201,50 @@ fn encrypt_passwords(passwords: HashMap<String, PasswordOpts>, key: String) -> a
     let serialize = bincode::serialize(&passwords)?;
     ctx.encrypt(&keys, serialize, &mut file)?;
     Ok(())
+}
+
+fn encode_password(
+    to_encode: &[u8],
+    length: u8,
+    cut: Option<usize>,
+    no_symbols: bool,
+) -> anyhow::Result<String> {
+    let mut final_result = String::new();
+
+    if !no_symbols {
+        let mut key: u32;
+        let mut rem: u32 = 0;
+        let mut shift: u32 = 0;
+
+        for _ in 0..length {
+            for c in to_encode {
+                rem |= (c.to_owned() as u32) << shift;
+                shift += 8;
+
+                if shift > 13 {
+                    key = rem & 8191;
+
+                    if key > 88 {
+                        rem >>= 13;
+                        shift -= 13;
+                    } else {
+                        key = rem & 16383;
+                        rem >>= 14;
+                        shift -= 14;
+                    }
+
+                    final_result.push(ENTAB[(key % 91) as usize]);
+                    final_result.push(ENTAB[(key / 91) as usize]);
+                }
+            }
+        }
+    } else {
+        final_result = base64::encode(to_encode);
+    }
+
+    if let Some(cutsome) = cut {
+        final_result.truncate(cutsome);
+    }
+
+    Ok(final_result)
 }
