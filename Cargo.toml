@@ -13,6 +13,7 @@ structopt = "*"
 enigo = "*"
 dirs = "*"
 yubico_manager = "*"
+base64 = "*"
 gpgme = "*"
 anyhow = "*"
 
