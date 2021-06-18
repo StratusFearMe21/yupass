@@ -12,7 +12,7 @@ This is a Linux password manager powered by the YubiKey's HMAC-SHA1 challenge re
 
 If you want to sync your passwords between Linux devices, like Bitwarden and others, follow these steps
 
-1.  Get an instance running of YuSync by following the directions [here](https://github.com/StratusFearMe21/yusync)
+1.  Get an instance running of YuSync by following the directions [here](StratusFearMe21)
 
 2a.  If you have a password DB on your device already, simply move the file **.yupass.asc** in your home directory to YuSync's working directory and rename it **file**.
 
@@ -27,6 +27,16 @@ yupass sync <GPG KEY> -s <SERVER URL>
 ```bash
 yupass init <GPG KEY> -s <SERVER URL>
 ```
+
+## Why YuPass?
+
+1.  Recovery is very easy if you have a second YubiKey. If you set up both Yubikeys with the same HMAC secret, you won't lose any of your passwords if you lose one of your keys.
+
+2.  If you lose your computer or the DB is deleted somehow, as long as you remember the settings for each of your passwords, just initializing a new database and adding the passwords back in is sufficient for recovering your passwords
+
+3.  Passwords aren't stored anywhere, not even on your computer or [syncing server](https://github.com/StratusFearMe21/yusync). The passwords are always derived from your YubiKey, nowhere else.
+
+4.  Passwords are very long for security. The default length for generated passwords in Bitwarden is 14 charecters, the YuPass default is 122 charecters. (The length of passwords is fully configurable).
 
 # DISCLAIMER: I AM NOT A CYBERSECURITY EXPERT
 
