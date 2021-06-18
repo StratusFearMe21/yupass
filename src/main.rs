@@ -59,6 +59,12 @@ enum Opts {
         #[structopt(flatten)]
         opts: YuPassOpts,
     },
+    /// Sync passwords from a sync server
+    Sync {
+        /// GPG key to encrypt passwords with
+        #[structopt(flatten)]
+        opts: YuPassOpts,
+    },
     /// Get a password using DMenu
     Get,
     /// Get the notes of a given password
@@ -92,7 +98,14 @@ fn main() -> anyhow::Result<()> {
             )
             .unwrap();
             println!("{:?}", &opts);
-            encrypt_passwords(HashMap::new(), opts)?;
+        }
+        Opts::Sync { opts } => {
+            std::fs::write(
+                format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                bincode::serialize(&opts)?,
+            )
+            .unwrap();
+            get_passwords()?;
         }
         Opts::Get => {
             let passwords = get_passwords()?;
