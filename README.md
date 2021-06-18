@@ -4,9 +4,29 @@ This is a Linux password manager powered by the YubiKey's HMAC-SHA1 challenge re
 
 # TODO:
 
-*   \[ ] Cloud syncing
+*   \[x] Cloud syncing
 *   \[ ] Cross platform (Windows, MacOS, Linux, Android)
 *   \[x] Notes
+
+# Cloud Syncing
+
+If you want to sync your passwords between Linux devices, like Bitwarden and others, follow these steps
+
+1.  Get an instance running of YuSync by following the directions [here](https://github.com/StratusFearMe21/yusync)
+
+2a.  If you have a password DB on your device already, simply move the file **.yupass.asc** in your home directory to YuSync's working directory and rename it **file**.
+
+2b.  After completing 2a, run this command
+
+```bash
+yupass sync <GPG KEY> -s <SERVER URL>
+```
+
+3a.  If you dont have a password DB then run this command to initialize it on the server
+
+```bash
+yupass init <GPG KEY> -s <SERVER URL>
+```
 
 # DISCLAIMER: I AM NOT A CYBERSECURITY EXPERT
 
