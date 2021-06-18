@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, ops::Deref, process::Command};
+use std::{collections::HashMap, ops::Deref, process::Command};
 
 #[cfg(not(windows))]
 use copypasta_ext::prelude::ClipboardProvider;
@@ -40,13 +40,24 @@ struct PasswordOpts {
     cut: Option<usize>,
 }
 
+#[derive(Serialize, Deserialize, StructOpt, Debug)]
+struct YuPassOpts {
+    /// If using a syncing server, which one to use
+    #[structopt(short)]
+    server: Option<String>,
+    key: String,
+    #[structopt(skip)]
+    rev: u32,
+}
+
 #[derive(StructOpt)]
 #[structopt(name = "YuPass", about = "A password manager, powered by the YubiKey")]
 enum Opts {
     /// Initialize the password database
     Init {
         /// GPG key to encrypt passwords with
-        key: String,
+        #[structopt(flatten)]
+        opts: YuPassOpts,
     },
     /// Get a password using DMenu
     Get,
@@ -73,14 +84,15 @@ enum Opts {
 fn main() -> anyhow::Result<()> {
     let opts = Opts::from_args();
     match opts {
-        Opts::Init { key } => {
+        Opts::Init { mut opts } => {
+            opts.rev = 1;
             std::fs::write(
-                format!("{}/.yupasskey", dirs::home_dir().unwrap().display()),
-                &key,
+                format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                bincode::serialize(&opts)?,
             )
             .unwrap();
-            encrypt_passwords(HashMap::new(), key)?;
-            println!("Passwords initialized");
+            println!("{:?}", &opts);
+            encrypt_passwords(HashMap::new(), opts)?;
         }
         Opts::Get => {
             let passwords = get_passwords()?;
@@ -155,54 +167,108 @@ fn main() -> anyhow::Result<()> {
             passwords.insert(title, password);
             encrypt_passwords(
                 passwords,
-                std::fs::read_to_string(format!(
-                    "{}/.yupasskey",
-                    dirs::home_dir().unwrap().display()
-                ))
-                .unwrap(),
-            )?;
+                bincode::deserialize(
+                    std::fs::read(format!(
+                        "{}/.yupassopts",
+                        dirs::home_dir().unwrap().display()
+                    ))?
+                    .as_slice(),
+                )?,
+            )?
         }
         Opts::Remove { title } => {
             let mut passwords = get_passwords()?;
             passwords.remove(&title).unwrap();
             encrypt_passwords(
                 passwords,
-                std::fs::read_to_string(format!(
-                    "{}/.yupasskey",
-                    dirs::home_dir().unwrap().display()
-                ))
-                .unwrap(),
-            )?;
+                bincode::deserialize(
+                    std::fs::read(format!(
+                        "{}/.yupassopts",
+                        dirs::home_dir().unwrap().display()
+                    ))?
+                    .as_slice(),
+                )?,
+            )?
         }
     }
     Ok(())
 }
 
 fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
+    let opts: YuPassOpts = bincode::deserialize(
+        std::fs::read(format!(
+            "{}/.yupassopts",
+            dirs::home_dir().unwrap().display()
+        ))?
+        .as_slice(),
+    )?;
+    let mut input;
+    match opts.server {
+        Some(server) => {
+            let rev: u32 = reqwest::blocking::get(format!("{}/rev", server))?
+                .text()?
+                .parse()?;
+            if opts.rev != rev {
+                let pgp = reqwest::blocking::get(format!("{}/download", server))?
+                    .text()?
+                    .as_bytes()
+                    .to_vec();
+                std::fs::write(
+                    format!("{}/.yupass.asc", dirs::home_dir().unwrap().display()),
+                    &pgp,
+                )?;
+                input = pgp;
+            } else {
+                input = std::fs::read_to_string(format!(
+                    "{}/.yupass.asc",
+                    dirs::home_dir().unwrap().display()
+                ))?
+                .as_bytes()
+                .to_vec();
+            }
+        }
+        None => {
+            input = std::fs::read_to_string(format!(
+                "{}/.yupass.asc",
+                dirs::home_dir().unwrap().display()
+            ))?
+            .as_bytes()
+            .to_vec()
+        }
+    }
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
-    let mut input = File::open(format!(
-        "{}/.yupass.asc",
-        dirs::home_dir().unwrap().display()
-    ))?;
     let mut outbuf = Vec::new();
     ctx.decrypt(&mut input, &mut outbuf)?;
     Ok(bincode::deserialize(outbuf.as_slice()).unwrap())
 }
 
-fn encrypt_passwords(passwords: HashMap<String, PasswordOpts>, key: String) -> anyhow::Result<()> {
-    let mut file = File::create(format!(
-        "{}/.yupass.asc",
-        dirs::home_dir().unwrap().display()
-    ))?;
+fn encrypt_passwords(
+    passwords: HashMap<String, PasswordOpts>,
+    opts: YuPassOpts,
+) -> anyhow::Result<()> {
+    let mut output = Vec::new();
     let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
-    let keys: Vec<Key> = ctx.find_keys(vec![key])?.filter_map(|x| x.ok()).collect();
-    let serialize = bincode::serialize(&passwords)?;
-    ctx.encrypt(&keys, serialize, &mut file)?;
+    let keys: Vec<Key> = ctx
+        .find_keys(vec![opts.key])?
+        .filter_map(|x| x.ok())
+        .collect();
+    ctx.encrypt(&keys, bincode::serialize(&passwords)?, &mut output)?;
+    std::fs::write(
+        format!("{}/.yupass.asc", dirs::home_dir().unwrap().display()),
+        &output,
+    )?;
+    if let Some(server) = opts.server {
+        reqwest::blocking::Client::new()
+            .post(format!("{}/upload", server))
+            .body(output)
+            .send()?;
+    }
     Ok(())
 }
 
+// Code stolen from base91 crate
 fn encode_password(
     to_encode: &[u8],
     length: u8,
