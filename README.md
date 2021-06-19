@@ -32,7 +32,7 @@ target/release/yupass init <GPG KEY>
 
 If you want to sync your passwords between Linux devices, like Bitwarden and others, follow these steps
 
-1.  Get an instance running of YuSync by following the directions [here](StratusFearMe21)
+1.  Get an instance running of YuSync by following the directions [here](https://github.com/StratusFearMe21/yusync)
 
 2a.  If you have a password DB on your device already, simply move the file **.yupass.asc** in your home directory to YuSync's working directory and rename it **file**.
 
