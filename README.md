@@ -2,13 +2,33 @@
 
 This is a Linux password manager powered by the YubiKey's HMAC-SHA1 challenge response slot. It encrypts a file using gpg which contains account notes, password options, and registered websites. Then it inputs the website title into the YubiKey and derives a password from the HMAC-SHA1 challenge response mode (Pro tip: Store the GPG private key on the YubiKey and the public key on your system for added security).
 
-# TODO:
+## Install
+
+*   YuPass is available on the AUR
+
+```bash
+yay -S yupass
+```
+
+*   YuPass can also be built from source
+
+```bash
+cargo build --release
+```
+
+*   To initialize the password DB run this command (if you want to use a sync server, see [Cloud Syncing](#cloud-syncing)
+
+```bash
+target/release/yupass init <GPG KEY>
+```
+
+## TODO:
 
 *   \[x] Cloud syncing
 *   \[ ] Cross platform (Windows, MacOS, Linux, Android)
 *   \[x] Notes
 
-# Cloud Syncing
+## Cloud Syncing
 
 If you want to sync your passwords between Linux devices, like Bitwarden and others, follow these steps
 
