@@ -9,6 +9,8 @@ edition = "2018"
 [dependencies]
 bincode = "*"
 serde = { version = "*", features = ["derive"] }
+rand = "0.7.3"
+ed25519-dalek = { version = "*", features = ["serde"] }
 structopt = "*"
 enigo = "*"
 dirs = "*"
