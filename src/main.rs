@@ -13,6 +13,8 @@ use enigo::KeyboardControllable;
 
 use gpgme::{Context, Key, Protocol};
 
+use ed25519_dalek::{Keypair, Signature, Signer};
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use yubico_manager::{
@@ -27,6 +29,12 @@ const ENTAB: [char; 91] = [
     '5', '6', '7', '8', '9', '!', '#', '$', '%', '&', '(', ')', '*', '+', ',', '.', '/', ':', ';',
     '<', '=', '>', '?', '@', '[', ']', '^', '_', '`', '{', '|', '}', '~', '"',
 ];
+
+#[derive(Serialize)]
+struct ServerMessage {
+    message: Vec<u8>,
+    signature: Signature,
+}
 
 #[derive(Serialize, Deserialize, StructOpt)]
 struct PasswordOpts {
@@ -94,6 +102,8 @@ struct YuPassOpts {
     key: String,
     #[structopt(skip)]
     rev: u32,
+    #[structopt(skip)]
+    server_keyfile: Option<Keypair>,
 }
 
 impl YuPassOpts {
@@ -147,6 +157,8 @@ enum Opts {
         /// The title of the password you want to remove
         title: String,
     },
+    /// Export the keyfile
+    ExportKeyfile,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -154,6 +166,15 @@ fn main() -> anyhow::Result<()> {
     match opts {
         Opts::Init { mut opts } => {
             opts.rev = 1;
+            if opts.server.is_some() {
+                if std::path::Path::new("yupass_keyfile").exists() {
+                    opts.server_keyfile = Some(Keypair::from_bytes(
+                        std::fs::read("yupass_keyfile")?.as_slice(),
+                    )?);
+                } else {
+                    opts.server_keyfile = Some(Keypair::generate(&mut OsRng {}));
+                }
+            }
             std::fs::write(
                 format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
                 bincode::serialize(&opts)?,
@@ -265,6 +286,20 @@ fn main() -> anyhow::Result<()> {
                 )?,
             )?
         }
+        Opts::ExportKeyfile => std::fs::write(
+            "yupass_keyfile",
+            bincode::deserialize::<YuPassOpts>(
+                std::fs::read(format!(
+                    "{}/.yupassopts",
+                    dirs::home_dir().unwrap().display()
+                ))?
+                .as_slice(),
+            )?
+            .server_keyfile
+            .unwrap()
+            .to_bytes(),
+        )
+        .unwrap(),
     }
     Ok(())
 }
@@ -342,7 +377,10 @@ fn encrypt_passwords(
     if let Some(server) = opts.server {
         reqwest::blocking::Client::new()
             .post(format!("{}/upload", server))
-            .body(output)
+            .body(bincode::serialize(&ServerMessage {
+                message: output.clone(),
+                signature: opts.server_keyfile.unwrap().sign(output.as_slice()),
+            })?)
             .send()?;
     }
     Ok(())
