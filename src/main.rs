@@ -1,5 +1,8 @@
-use console::style;
+use anyhow::{bail, ensure, Context};
+use console::{style, StyledObject};
+use reqwest::StatusCode;
 use std::{
+    borrow::Borrow,
     collections::HashMap,
     io::{Read, Write},
     ops::Deref,
@@ -11,7 +14,7 @@ use copypasta_ext::prelude::ClipboardProvider;
 
 use enigo::KeyboardControllable;
 
-use gpgme::{Context, Key, Protocol};
+use gpgme::{Key, Protocol};
 
 use ed25519_dalek::{Keypair, Signature, Signer};
 use rand::rngs::OsRng;
@@ -107,17 +110,10 @@ struct YuPassOpts {
 }
 
 impl YuPassOpts {
-    fn print_opts(&self) {
+    fn print_opts(&self, server_status: StyledObject<&str>) {
         println!("{}", style("---------").bold());
         println!("Key: {}", self.key);
-        println!(
-            "{}",
-            if let Some(server) = &self.server {
-                style(format!("Server: {}", server)).bold()
-            } else {
-                style("Server: None".to_string())
-            }
-        );
+        println!("{}", server_status);
         println!("{}", style("---------").bold());
     }
 }
@@ -136,6 +132,7 @@ enum Opts {
         /// GPG key to encrypt passwords with
         #[structopt(flatten)]
         opts: YuPassOpts,
+        keyfile: std::path::PathBuf,
     },
     /// Get a password using DMenu
     Get,
@@ -174,19 +171,71 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     opts.server_keyfile = Some(Keypair::generate(&mut OsRng {}));
                 }
+                let code = reqwest::blocking::Client::new()
+                    .post(format!(
+                        "{}/init",
+                        opts.server.as_ref().context("Cannot find server URL")?
+                    ))
+                    .body(
+                        opts.server_keyfile
+                            .as_ref()
+                            .context("Cannot find keyfile")?
+                            .public
+                            .to_bytes()
+                            .to_vec(),
+                    )
+                    .send()?
+                    .status();
+                if code == StatusCode::FORBIDDEN {
+                    opts.print_opts(
+                        style("Server: Server initialization failed, server already initialized. Follow these steps to get the other computer working\n\n1. run \"yupass export-keyfile\" to write the keyfile you need to the disk\n2. Put the keyfile on the other compter you want to sync\n3. run \"yupass sync\" with the keyfile as your argument to begin syncing passwords between computers")
+                            .red(),
+                    );
+                } else if code == StatusCode::OK {
+                    opts.print_opts(
+                        style(
+                            opts.server
+                                .as_ref()
+                                .context("Could not get server URL")?
+                                .borrow(),
+                        )
+                        .bold(),
+                    );
+                }
+            } else {
+                opts.print_opts(style("None"));
             }
             std::fs::write(
-                format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                format!(
+                    "{}/.yupassopts",
+                    dirs::home_dir()
+                        .context("Cannot find home directory")?
+                        .display()
+                ),
                 bincode::serialize(&opts)?,
             )?;
-            opts.print_opts();
             encrypt_passwords(HashMap::new(), opts)?;
         }
-        Opts::Sync { opts } => {
+        Opts::Sync { mut opts, keyfile } => {
+            opts.server_keyfile = Some(Keypair::from_bytes(std::fs::read(keyfile)?.as_slice())?);
             std::fs::write(
-                format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                format!(
+                    "{}/.yupassopts",
+                    dirs::home_dir()
+                        .context("Cannot find home directory")?
+                        .display()
+                ),
                 bincode::serialize(&opts)?,
             )?;
+            ensure!(opts.server.is_some(), "You did not provide a server URL");
+            let code = reqwest::blocking::get(format!(
+                "{}/rev",
+                opts.server.as_ref().context("Cannot find server URL")?
+            ))?
+            .status();
+            if code != StatusCode::INTERNAL_SERVER_ERROR {
+                bail!("Server has already been initialized");
+            }
             get_passwords()?;
         }
         Opts::Get => {
@@ -197,64 +246,64 @@ fn main() -> anyhow::Result<()> {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()?;
-            passproc.stdin.unwrap().write_all(
-                passwords
-                    .keys()
-                    .into_iter()
-                    .map(|f| format!("{}\n", f))
-                    .collect::<String>()
-                    .as_bytes(),
-            )?;
-            let mut passopt = String::new();
-            passproc.stdout.unwrap().read_to_string(&mut passopt)?;
-            let passstruct = passwords.get(passopt.trim()).unwrap();
-
-            #[cfg(windows)]
-            {
-                unimplemented!("Windows support coming soon!");
-            }
-
-            #[cfg(not(windows))]
-            {
-                let mut keyboard = enigo::Enigo::new();
-
-                let hmac_result = yubi.challenge_response_hmac(
-                    passopt.as_bytes(),
-                    Config::default()
-                        .set_vendor_id(device.vendor_id)
-                        .set_product_id(device.product_id)
-                        .set_variable_size(true)
-                        .set_mode(Mode::Sha1)
-                        .set_slot(Slot::Slot2),
+            passproc
+                .stdin
+                .context("Cannot get stdin of dmenu")?
+                .write_all(
+                    passwords
+                        .keys()
+                        .into_iter()
+                        .map(|f| format!("{}\n", f))
+                        .collect::<String>()
+                        .as_bytes(),
                 )?;
+            let mut passopt = String::new();
+            passproc
+                .stdout
+                .context("Cannot get stout of dmenu")?
+                .read_to_string(&mut passopt)?;
+            let passstruct = passwords
+                .get(passopt.trim())
+                .context("Couldn't find that password in the database")?;
 
-                let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
-                ctx.set_contents(encode_password(
-                    hmac_result.deref(),
-                    passstruct.length,
-                    passstruct.cut,
-                    passstruct.no_symbols,
-                )?)
-                .unwrap();
+            let mut keyboard = enigo::Enigo::new();
 
-                keyboard.key_down(enigo::Key::Control);
-                keyboard.key_click(enigo::Key::Layout('v'));
-                keyboard.key_up(enigo::Key::Control);
+            let hmac_result = yubi.challenge_response_hmac(
+                passopt.as_bytes(),
+                Config::default()
+                    .set_vendor_id(device.vendor_id)
+                    .set_product_id(device.product_id)
+                    .set_variable_size(true)
+                    .set_mode(Mode::Sha1)
+                    .set_slot(Slot::Slot2),
+            )?;
 
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
+            ctx.set_contents(encode_password(
+                hmac_result.deref(),
+                passstruct.length,
+                passstruct.cut,
+                passstruct.no_symbols,
+            )?)
+            .unwrap();
 
-                ctx.set_contents(passstruct.username.to_owned()).unwrap();
-            }
+            keyboard.key_down(enigo::Key::Control);
+            keyboard.key_click(enigo::Key::Layout('v'));
+            keyboard.key_up(enigo::Key::Control);
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            ctx.set_contents(passstruct.username.to_owned()).unwrap();
         }
         Opts::Notes { title } => {
             println!(
                 "{}",
                 get_passwords()?
                     .get(&title)
-                    .unwrap()
+                    .context("Couldn't find that password in the database")?
                     .notes
                     .clone()
-                    .unwrap_or("No Notes".to_string())
+                    .context("No notes")?
             )
         }
         Opts::Add { title, password } => {
@@ -266,7 +315,9 @@ fn main() -> anyhow::Result<()> {
                 bincode::deserialize(
                     std::fs::read(format!(
                         "{}/.yupassopts",
-                        dirs::home_dir().unwrap().display()
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
                     ))?
                     .as_slice(),
                 )?,
@@ -274,13 +325,17 @@ fn main() -> anyhow::Result<()> {
         }
         Opts::Remove { title } => {
             let mut passwords = get_passwords()?;
-            passwords.remove(&title).unwrap();
+            passwords
+                .remove(&title)
+                .context("Couldn't find that password in the database")?;
             encrypt_passwords(
                 passwords,
                 bincode::deserialize(
                     std::fs::read(format!(
                         "{}/.yupassopts",
-                        dirs::home_dir().unwrap().display()
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
                     ))?
                     .as_slice(),
                 )?,
@@ -291,15 +346,16 @@ fn main() -> anyhow::Result<()> {
             bincode::deserialize::<YuPassOpts>(
                 std::fs::read(format!(
                     "{}/.yupassopts",
-                    dirs::home_dir().unwrap().display()
+                    dirs::home_dir()
+                        .context("Cannot find home directory")?
+                        .display()
                 ))?
                 .as_slice(),
             )?
             .server_keyfile
-            .unwrap()
+            .context("Cannot find the server keyfile")?
             .to_bytes(),
-        )
-        .unwrap(),
+        )?,
     }
     Ok(())
 }
@@ -308,7 +364,9 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
     let mut opts: YuPassOpts = bincode::deserialize(
         std::fs::read(format!(
             "{}/.yupassopts",
-            dirs::home_dir().unwrap().display()
+            dirs::home_dir()
+                .context("Cannot find the server keyfile")?
+                .display()
         ))?
         .as_slice(),
     )?;
@@ -324,19 +382,31 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
                     .as_bytes()
                     .to_vec();
                 std::fs::write(
-                    format!("{}/.yupass.asc", dirs::home_dir().unwrap().display()),
+                    format!(
+                        "{}/.yupass.asc",
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
+                    ),
                     &pgp,
                 )?;
                 opts.rev = rev;
                 std::fs::write(
-                    format!("{}/.yupassopts", dirs::home_dir().unwrap().display()),
+                    format!(
+                        "{}/.yupassopts",
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
+                    ),
                     bincode::serialize(&opts)?,
                 )?;
                 input = pgp;
             } else {
                 input = std::fs::read_to_string(format!(
                     "{}/.yupass.asc",
-                    dirs::home_dir().unwrap().display()
+                    dirs::home_dir()
+                        .context("Cannot find home directory")?
+                        .display()
                 ))?
                 .as_bytes()
                 .to_vec();
@@ -345,13 +415,15 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
         None => {
             input = std::fs::read_to_string(format!(
                 "{}/.yupass.asc",
-                dirs::home_dir().unwrap().display()
+                dirs::home_dir()
+                    .context("Cannot find home directory")?
+                    .display()
             ))?
             .as_bytes()
             .to_vec()
         }
     }
-    let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
+    let mut ctx = gpgme::Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
     let mut outbuf = Vec::new();
     ctx.decrypt(&mut input, &mut outbuf)?;
@@ -363,7 +435,7 @@ fn encrypt_passwords(
     opts: YuPassOpts,
 ) -> anyhow::Result<()> {
     let mut output = Vec::new();
-    let mut ctx = Context::from_protocol(Protocol::OpenPgp)?;
+    let mut ctx = gpgme::Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
     let keys: Vec<Key> = ctx
         .find_keys(vec![opts.key])?
@@ -371,22 +443,35 @@ fn encrypt_passwords(
         .collect();
     ctx.encrypt(&keys, bincode::serialize(&passwords)?, &mut output)?;
     std::fs::write(
-        format!("{}/.yupass.asc", dirs::home_dir().unwrap().display()),
+        format!(
+            "{}/.yupass.asc",
+            dirs::home_dir()
+                .context("Cannot find home directory")?
+                .display()
+        ),
         &output,
     )?;
     if let Some(server) = opts.server {
-        reqwest::blocking::Client::new()
+        let code = reqwest::blocking::Client::new()
             .post(format!("{}/upload", server))
             .body(bincode::serialize(&ServerMessage {
                 message: output.clone(),
-                signature: opts.server_keyfile.unwrap().sign(output.as_slice()),
+                signature: opts
+                    .server_keyfile
+                    .context("Server key file")?
+                    .sign(output.as_slice()),
             })?)
-            .send()?;
+            .send()?
+            .status();
+
+        if code == StatusCode::FORBIDDEN {
+            bail!("Invalid signature, cannot modify password database");
+        }
     }
     Ok(())
 }
 
-// Code stolen from base91 crate
+// Code stolen (borrowed ;) ) from base91 crate
 fn encode_password(
     to_encode: &[u8],
     length: u8,
