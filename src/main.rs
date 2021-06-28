@@ -233,8 +233,8 @@ fn main() -> anyhow::Result<()> {
                 opts.server.as_ref().context("Cannot find server URL")?
             ))?
             .status();
-            if code != StatusCode::INTERNAL_SERVER_ERROR {
-                bail!("Server has already been initialized");
+            if code == StatusCode::INTERNAL_SERVER_ERROR {
+                bail!("Server has not been initialized");
             }
             get_passwords()?;
         }
