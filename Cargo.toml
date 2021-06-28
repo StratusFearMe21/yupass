@@ -1,6 +1,6 @@
 [package]
 name = "yupass"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Isaac Mills <rooster0055@protonmail.com>"]
 edition = "2018"
 
@@ -14,11 +14,11 @@ ed25519-dalek = { version = "*", features = ["serde"] }
 structopt = "*"
 enigo = "*"
 dirs = "*"
+reqwest = { version = "*", features = ["blocking"] }
 yubico_manager = "*"
 base64 = "*"
 gpgme = "*"
-reqwest = { version = "*", features = ["blocking"] }
-console = "*"
+console = { version = "*", default-features = false }
 anyhow = "*"
 
 [target.'cfg(windows)'.dependencies]
