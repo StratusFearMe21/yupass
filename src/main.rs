@@ -25,6 +25,19 @@ use yubico_manager::{
     Yubico,
 };
 
+macro_rules! server_message {
+    ($a:expr, $b:expr) => {
+        bincode::serialize(&ServerMessage {
+            message: $a.to_vec(),
+            signature: $b
+                .server_keyfile
+                .as_ref()
+                .context("Server key file")?
+                .sign($a),
+        })?
+    };
+}
+
 const ENTAB: [char; 91] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
     'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
@@ -159,8 +172,7 @@ enum Opts {
 }
 
 fn main() -> anyhow::Result<()> {
-    let opts = Opts::from_args();
-    match opts {
+    match Opts::from_args() {
         Opts::Init { mut opts } => {
             opts.rev = 1;
             if opts.server.is_some() {
@@ -189,8 +201,8 @@ fn main() -> anyhow::Result<()> {
                 if code == StatusCode::FORBIDDEN {
                     opts.print_opts(
                         style("Server: Server initialization failed, server already initialized. Follow these steps to get the other computer working\n\n1. run \"yupass export-keyfile\" to write the keyfile you need to the disk\n2. Put the keyfile on the other compter you want to sync\n3. run \"yupass sync\" with the keyfile as your argument to begin syncing passwords between computers")
-                            .red(),
-                    );
+                        .red(),
+                        );
                 } else if code == StatusCode::OK {
                     opts.print_opts(
                         style(
@@ -228,13 +240,18 @@ fn main() -> anyhow::Result<()> {
                 bincode::serialize(&opts)?,
             )?;
             ensure!(opts.server.is_some(), "You did not provide a server URL");
-            let code = reqwest::blocking::get(format!(
-                "{}/rev",
-                opts.server.as_ref().context("Cannot find server URL")?
-            ))?
-            .status();
-            if code != StatusCode::INTERNAL_SERVER_ERROR {
-                bail!("Server has already been initialized");
+            let code = reqwest::blocking::Client::new()
+                .post(format!(
+                    "{}/request",
+                    opts.server.as_ref().context("Cannot find server URL")?
+                ))
+                .body(server_message!(b"rev", opts))
+                .send()?
+                .status();
+            if code == StatusCode::INTERNAL_SERVER_ERROR {
+                bail!("Server has not been initialized");
+            } else if code == StatusCode::FORBIDDEN {
+                bail!("Signature invalid");
             }
             get_passwords()?;
         }
@@ -373,14 +390,30 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
     let mut input;
     match &opts.server {
         Some(server) => {
-            let rev: u32 = reqwest::blocking::get(format!("{}/rev", server))?
-                .text()?
-                .parse()?;
+            let rev: u32 = match reqwest::blocking::Client::new()
+                .post(format!("{}/request", server))
+                .body(server_message!(b"rev", opts))
+                .send()?
+            {
+                r if r.status() == StatusCode::FORBIDDEN => bail!("Invalid Signature"),
+                r if r.status() == StatusCode::INTERNAL_SERVER_ERROR => bail!("Server error"),
+                r => r,
+            }
+            .text()?
+            .parse()?;
             if opts.rev != rev {
-                let pgp = reqwest::blocking::get(format!("{}/download", server))?
-                    .text()?
-                    .as_bytes()
-                    .to_vec();
+                let pgp = match reqwest::blocking::Client::new()
+                    .post(format!("{}/request", server))
+                    .body(server_message!(b"file", opts))
+                    .send()?
+                {
+                    r if r.status() == StatusCode::FORBIDDEN => bail!("Invalid Signature"),
+                    r if r.status() == StatusCode::INTERNAL_SERVER_ERROR => bail!("Server error"),
+                    r => r,
+                }
+                .text()?
+                .as_bytes()
+                .to_vec();
                 std::fs::write(
                     format!(
                         "{}/.yupass.asc",
