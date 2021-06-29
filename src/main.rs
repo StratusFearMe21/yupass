@@ -1,5 +1,7 @@
 use anyhow::{bail, ensure, Context};
 use console::{style, StyledObject};
+use crypto_box::{aead::Aead, PublicKey, SecretKey};
+use rand_core::OsRng;
 use reqwest::StatusCode;
 use std::{
     borrow::Borrow,
@@ -16,27 +18,12 @@ use enigo::KeyboardControllable;
 
 use gpgme::{Key, Protocol};
 
-use ed25519_dalek::{Keypair, Signature, Signer};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use yubico_manager::{
     config::{Config, Mode, Slot},
     Yubico,
 };
-
-macro_rules! server_message {
-    ($a:expr, $b:expr) => {
-        bincode::serialize(&ServerMessage {
-            message: $a.to_vec(),
-            signature: $b
-                .server_keyfile
-                .as_ref()
-                .context("Server key file")?
-                .sign($a),
-        })?
-    };
-}
 
 const ENTAB: [char; 91] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
@@ -46,10 +33,19 @@ const ENTAB: [char; 91] = [
     '<', '=', '>', '?', '@', '[', ']', '^', '_', '`', '{', '|', '}', '~', '"',
 ];
 
-#[derive(Serialize)]
+macro_rules! server_keybox {
+    ($a:expr) => {
+        crypto_box::Box::new(
+            &PublicKey::from($a.server_public.context("No server public key")?),
+            &SecretKey::from($a.client_private.context("No client private key")?),
+        )
+    };
+}
+
+#[derive(Serialize, Deserialize)]
 struct ServerMessage {
     message: Vec<u8>,
-    signature: Signature,
+    nonce: [u8; 24],
 }
 
 #[derive(Serialize, Deserialize, StructOpt)]
@@ -119,7 +115,9 @@ struct YuPassOpts {
     #[structopt(skip)]
     rev: u32,
     #[structopt(skip)]
-    server_keyfile: Option<Keypair>,
+    client_private: Option<[u8; 32]>,
+    #[structopt(skip)]
+    server_public: Option<[u8; 32]>,
 }
 
 impl YuPassOpts {
@@ -145,10 +143,14 @@ enum Opts {
         /// GPG key to encrypt passwords with
         #[structopt(flatten)]
         opts: YuPassOpts,
-        keyfile: std::path::PathBuf,
+        server_public: std::path::PathBuf,
+        client_private: std::path::PathBuf,
     },
     /// Get a password using DMenu
-    Get,
+    Get {
+        /// Get the options for a specific password
+        password: Option<String>,
+    },
     /// Get the notes of a given password
     Notes {
         /// The title of the password you want to look up
@@ -176,34 +178,21 @@ fn main() -> anyhow::Result<()> {
         Opts::Init { mut opts } => {
             opts.rev = 1;
             if opts.server.is_some() {
-                if std::path::Path::new("yupass_keyfile").exists() {
-                    opts.server_keyfile = Some(Keypair::from_bytes(
-                        std::fs::read("yupass_keyfile")?.as_slice(),
-                    )?);
-                } else {
-                    opts.server_keyfile = Some(Keypair::generate(&mut OsRng {}));
-                }
-                let code = reqwest::blocking::Client::new()
+                let key = SecretKey::generate(&mut OsRng);
+                opts.client_private = Some(key.to_bytes());
+                let init_request = reqwest::blocking::Client::new()
                     .post(format!(
                         "{}/init",
                         opts.server.as_ref().context("Cannot find server URL")?
                     ))
-                    .body(
-                        opts.server_keyfile
-                            .as_ref()
-                            .context("Cannot find keyfile")?
-                            .public
-                            .to_bytes()
-                            .to_vec(),
-                    )
-                    .send()?
-                    .status();
-                if code == StatusCode::FORBIDDEN {
+                    .body(key.public_key().as_bytes().to_vec())
+                    .send()?;
+                if init_request.status() == StatusCode::FORBIDDEN {
                     opts.print_opts(
                         style("Server: Server initialization failed, server already initialized. Follow these steps to get the other computer working\n\n1. run \"yupass export-keyfile\" to write the keyfile you need to the disk\n2. Put the keyfile on the other compter you want to sync\n3. run \"yupass sync\" with the keyfile as your argument to begin syncing passwords between computers")
                         .red(),
                         );
-                } else if code == StatusCode::OK {
+                } else if init_request.status() == StatusCode::OK {
                     opts.print_opts(
                         style(
                             opts.server
@@ -214,6 +203,7 @@ fn main() -> anyhow::Result<()> {
                         .bold(),
                     );
                 }
+                opts.server_public = Some(pubkey_slice(init_request.bytes()?.borrow()))
             } else {
                 opts.print_opts(style("None"));
             }
@@ -228,8 +218,13 @@ fn main() -> anyhow::Result<()> {
             )?;
             encrypt_passwords(HashMap::new(), opts)?;
         }
-        Opts::Sync { mut opts, keyfile } => {
-            opts.server_keyfile = Some(Keypair::from_bytes(std::fs::read(keyfile)?.as_slice())?);
+        Opts::Sync {
+            mut opts,
+            server_public,
+            client_private,
+        } => {
+            opts.client_private = Some(pubkey_slice(std::fs::read(client_private)?.as_slice()));
+            opts.server_public = Some(pubkey_slice(std::fs::read(server_public)?.as_slice()));
             std::fs::write(
                 format!(
                     "{}/.yupassopts",
@@ -240,23 +235,17 @@ fn main() -> anyhow::Result<()> {
                 bincode::serialize(&opts)?,
             )?;
             ensure!(opts.server.is_some(), "You did not provide a server URL");
-            let code = reqwest::blocking::Client::new()
-                .post(format!(
-                    "{}/request",
-                    opts.server.as_ref().context("Cannot find server URL")?
-                ))
-                .body(server_message!(b"rev", opts))
-                .send()?
-                .status();
-            if code == StatusCode::INTERNAL_SERVER_ERROR {
-                bail!("Server has not been initialized");
-            } else if code == StatusCode::FORBIDDEN {
-                bail!("Signature invalid");
-            }
             get_passwords()?;
         }
-        Opts::Get => {
+        Opts::Get { password } => {
             let passwords = get_passwords()?;
+            if let Some(pass) = password {
+                passwords
+                    .get(&pass)
+                    .context("Couldn't find that password in the database")?
+                    .print_opts();
+                return Ok(());
+            }
             let mut yubi = Yubico::new();
             let device = yubi.find_yubikey()?;
             let passproc = Command::new("dmenu")
@@ -358,21 +347,36 @@ fn main() -> anyhow::Result<()> {
                 )?,
             )?
         }
-        Opts::ExportKeyfile => std::fs::write(
-            "yupass_keyfile",
-            bincode::deserialize::<YuPassOpts>(
-                std::fs::read(format!(
-                    "{}/.yupassopts",
-                    dirs::home_dir()
-                        .context("Cannot find home directory")?
-                        .display()
-                ))?
-                .as_slice(),
-            )?
-            .server_keyfile
-            .context("Cannot find the server keyfile")?
-            .to_bytes(),
-        )?,
+        Opts::ExportKeyfile => {
+            std::fs::write(
+                "client_private",
+                bincode::deserialize::<YuPassOpts>(
+                    std::fs::read(format!(
+                        "{}/.yupassopts",
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
+                    ))?
+                    .as_slice(),
+                )?
+                .client_private
+                .context("Cannot find the server keyfile")?,
+            )?;
+            std::fs::write(
+                "server_public",
+                bincode::deserialize::<YuPassOpts>(
+                    std::fs::read(format!(
+                        "{}/.yupassopts",
+                        dirs::home_dir()
+                            .context("Cannot find home directory")?
+                            .display()
+                    ))?
+                    .as_slice(),
+                )?
+                .server_public
+                .context("Cannot find the server keyfile")?,
+            )?;
+        }
     }
     Ok(())
 }
@@ -387,33 +391,30 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
         ))?
         .as_slice(),
     )?;
+    let keybox = server_keybox!(opts);
     let mut input;
     match &opts.server {
         Some(server) => {
-            let rev: u32 = match reqwest::blocking::Client::new()
-                .post(format!("{}/request", server))
-                .body(server_message!(b"rev", opts))
-                .send()?
-            {
-                r if r.status() == StatusCode::FORBIDDEN => bail!("Invalid Signature"),
-                r if r.status() == StatusCode::INTERNAL_SERVER_ERROR => bail!("Server error"),
-                r => r,
-            }
-            .text()?
+            let rev: u32 = String::from_utf8(decrypt_message(
+                reqwest::blocking::Client::new()
+                    .post(format!("{}/request", server))
+                    .body(encrypt_message(b"rev", &keybox)?)
+                    .send()?
+                    .bytes()?
+                    .borrow(),
+                &keybox,
+            )?)?
             .parse()?;
             if opts.rev != rev {
-                let pgp = match reqwest::blocking::Client::new()
-                    .post(format!("{}/request", server))
-                    .body(server_message!(b"file", opts))
-                    .send()?
-                {
-                    r if r.status() == StatusCode::FORBIDDEN => bail!("Invalid Signature"),
-                    r if r.status() == StatusCode::INTERNAL_SERVER_ERROR => bail!("Server error"),
-                    r => r,
-                }
-                .text()?
-                .as_bytes()
-                .to_vec();
+                let pgp = decrypt_message(
+                    reqwest::blocking::Client::new()
+                        .post(format!("{}/request", server))
+                        .body(encrypt_message(b"file", &keybox)?)
+                        .send()?
+                        .bytes()?
+                        .borrow(),
+                    &keybox,
+                )?;
                 std::fs::write(
                     format!(
                         "{}/.yupass.asc",
@@ -467,13 +468,14 @@ fn encrypt_passwords(
     passwords: HashMap<String, PasswordOpts>,
     opts: YuPassOpts,
 ) -> anyhow::Result<()> {
+    let keybox = server_keybox!(opts);
     let mut output = Vec::new();
     let mut ctx = gpgme::Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
-    let keys: Vec<Key> = ctx
+    let keys = ctx
         .find_keys(vec![opts.key])?
         .filter_map(|x| x.ok())
-        .collect();
+        .collect::<Vec<Key>>();
     ctx.encrypt(&keys, bincode::serialize(&passwords)?, &mut output)?;
     std::fs::write(
         format!(
@@ -484,16 +486,10 @@ fn encrypt_passwords(
         ),
         &output,
     )?;
-    if let Some(server) = opts.server {
+    if let Some(server) = &opts.server {
         let code = reqwest::blocking::Client::new()
             .post(format!("{}/upload", server))
-            .body(bincode::serialize(&ServerMessage {
-                message: output.clone(),
-                signature: opts
-                    .server_keyfile
-                    .context("Server key file")?
-                    .sign(output.as_slice()),
-            })?)
+            .body(encrypt_message(output.as_slice(), &keybox)?)
             .send()?
             .status();
 
@@ -549,4 +545,23 @@ fn encode_password(
     }
 
     Ok(final_result)
+}
+
+fn pubkey_slice(s: &[u8]) -> [u8; 32] {
+    let mut a: [u8; 32] = Default::default();
+    a.copy_from_slice(s);
+    a
+}
+
+fn encrypt_message(message: &[u8], keybox: &crypto_box::Box) -> anyhow::Result<Vec<u8>> {
+    let nonce = crypto_box::generate_nonce(&mut OsRng);
+    Ok(bincode::serialize(&ServerMessage {
+        nonce: nonce.into(),
+        message: keybox.encrypt(&nonce, message).unwrap(),
+    })?)
+}
+
+fn decrypt_message(message: &[u8], keybox: &crypto_box::Box) -> anyhow::Result<Vec<u8>> {
+    let des_message: ServerMessage = bincode::deserialize(message)?;
+    Ok(keybox.decrypt(&des_message.nonce.into(), des_message.message.as_slice())?)
 }

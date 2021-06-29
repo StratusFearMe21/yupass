@@ -1,6 +1,6 @@
 [package]
 name = "yupass"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Isaac Mills <rooster0055@protonmail.com>"]
 edition = "2018"
 
@@ -9,9 +9,9 @@ edition = "2018"
 [dependencies]
 bincode = "*"
 serde = { version = "*", features = ["derive"] }
-rand = "0.7.3"
-ed25519-dalek = { version = "*", features = ["serde"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 structopt = "*"
+crypto_box = { version = "*", features = ["std"] }
 enigo = "*"
 dirs = "*"
 reqwest = { version = "*", features = ["blocking"] }
