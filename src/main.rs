@@ -1,5 +1,5 @@
 use anyhow::{bail, ensure, Context};
-use console::{style, StyledObject};
+use const_colors::{bold, end, red};
 use crypto_box::{aead::Aead, PublicKey, SecretKey};
 use rand_core::OsRng;
 use reqwest::StatusCode;
@@ -68,41 +68,36 @@ struct PasswordOpts {
 
 impl PasswordOpts {
     fn print_opts(&self) {
-        println!("{}", style("---------").bold());
-        println!("Username: {}", self.username);
         println!(
-            "{}",
+            concat!(
+                bold!(),
+                "---------",
+                end!(),
+                "\nUsername: {}\n{}\n{}Length: {}{}\n{}\n{}\n",
+                bold!(),
+                "---------",
+                end!()
+            ),
+            self.username,
             if self.no_symbols {
-                style("No Symbols: true").bold()
+                concat!(bold!(), "No Symbols: true", end!())
             } else {
-                style("No Symbols: false")
-            }
-        );
-        println!(
-            "{}",
-            if self.length != 5 {
-                style(format!("Length: {}", self.length)).bold()
-            } else {
-                style(format!("Length: {}", self.length))
-            }
-        );
-        println!(
-            "{}",
+                "No Symbols: false"
+            },
+            if self.length != 5 { bold!() } else { "" },
+            self.length,
+            if self.length != 5 { end!() } else { "" },
             if let Some(notes) = &self.notes {
-                style(format!("Notes: {}", notes)).bold()
+                format!(concat!(bold!(), "Notes: {}", end!()), notes)
             } else {
-                style("Notes: None".to_string())
+                "Notes: None".to_string()
+            },
+            if let Some(cut) = &self.cut {
+                format!(concat!(bold!(), "Cut: {}", end!()), cut)
+            } else {
+                "Cut: None".to_string()
             }
         );
-        println!(
-            "{}",
-            if let Some(cut) = self.cut {
-                style(format!("Cut: {}", cut)).bold()
-            } else {
-                style("Cut: None".to_string())
-            }
-        );
-        println!("{}", style("---------").bold());
     }
 }
 
@@ -121,11 +116,23 @@ struct YuPassOpts {
 }
 
 impl YuPassOpts {
-    fn print_opts(&self, server_status: StyledObject<&str>) {
-        println!("{}", style("---------").bold());
-        println!("Key: {}", self.key);
-        println!("{}", server_status);
-        println!("{}", style("---------").bold());
+    fn print_opts(&self, server_status: &str) {
+        println!(
+            concat!(
+                bold!(),
+                "---------",
+                end!(),
+                "\nKey: {}\n",
+                bold!(),
+                "{}",
+                end!(),
+                "\n",
+                bold!(),
+                "---------",
+                end!()
+            ),
+            self.key, server_status,
+        );
     }
 }
 
@@ -189,23 +196,18 @@ fn main() -> anyhow::Result<()> {
                     .send()?;
                 if init_request.status() == StatusCode::FORBIDDEN {
                     opts.print_opts(
-                        style("Server: Server initialization failed, server already initialized. Follow these steps to get the other computer working\n\n1. run \"yupass export-keyfile\" to write the keyfile you need to the disk\n2. Put the keyfile on the other compter you want to sync\n3. run \"yupass sync\" with the keyfile as your argument to begin syncing passwords between computers")
-                        .red(),
-                        );
+                        concat!(red!(), "Server: Server initialization failed, server already initialized. Follow these steps to get the other computer working\n\n1. run \"yupass export-keyfile\" to write the keyfile you need to the disk\n2. Put the keyfile on the other compter you want to sync\n3. run \"yupass sync\" with the keyfile as your argument to begin syncing passwords between computers"));
                 } else if init_request.status() == StatusCode::OK {
                     opts.print_opts(
-                        style(
-                            opts.server
-                                .as_ref()
-                                .context("Could not get server URL")?
-                                .borrow(),
-                        )
-                        .bold(),
+                        opts.server
+                            .as_ref()
+                            .context("Could not get server URL")?
+                            .borrow(),
                     );
                 }
                 opts.server_public = Some(pubkey_slice(init_request.bytes()?.borrow()))
             } else {
-                opts.print_opts(style("None"));
+                opts.print_opts("None");
             }
             std::fs::write(
                 format!(
