@@ -20,6 +20,7 @@ base64 = "*"
 gpgme = "*"
 const_colors = "*"
 anyhow = "*"
+serde_json = "1.0.87"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "4.2.1"

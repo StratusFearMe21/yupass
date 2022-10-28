@@ -1,6 +1,9 @@
 use anyhow::{bail, ensure, Context};
 use const_colors::{bold, end, red};
-use crypto_box::{aead::Aead, PublicKey, SecretKey};
+use crypto_box::{
+    aead::{Aead, AeadCore},
+    PublicKey, SecretKey,
+};
 use rand_core::OsRng;
 use reqwest::StatusCode;
 use std::{
@@ -35,7 +38,7 @@ const ENTAB: [char; 91] = [
 
 macro_rules! server_keybox {
     ($a:expr) => {
-        crypto_box::Box::new(
+        crypto_box::ChaChaBox::new(
             &PublicKey::from($a.server_public.context("No server public key")?),
             &SecretKey::from($a.client_private.context("No client private key")?),
         )
@@ -64,6 +67,25 @@ struct PasswordOpts {
     /// Cut the password to a certain length
     #[structopt(short)]
     cut: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct BitwardenJson {
+    items: Vec<BitwardenItem>,
+}
+
+#[derive(Serialize)]
+struct BitwardenItem {
+    #[serde(rename = "type")]
+    _type: u8,
+    name: String,
+    login: BitwardenLogin,
+}
+
+#[derive(Serialize)]
+struct BitwardenLogin {
+    username: String,
+    password: String,
 }
 
 impl PasswordOpts {
@@ -178,6 +200,8 @@ enum Opts {
     },
     /// Export the keyfile
     ExportKeyfile,
+    /// Export to Bitwarden
+    Export,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -250,7 +274,7 @@ fn main() -> anyhow::Result<()> {
             }
             let mut yubi = Yubico::new();
             let device = yubi.find_yubikey()?;
-            let passproc = Command::new("dmenu")
+            let passproc = Command::new("tofi")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()?;
@@ -274,19 +298,19 @@ fn main() -> anyhow::Result<()> {
                 .get(passopt.trim())
                 .context("Couldn't find that password in the database")?;
 
-            let mut keyboard = enigo::Enigo::new();
+            let hmac_result = yubi
+                .challenge_response_hmac(
+                    passopt.as_bytes(),
+                    Config::default()
+                        .set_vendor_id(device.vendor_id)
+                        .set_product_id(device.product_id)
+                        .set_variable_size(true)
+                        .set_mode(Mode::Sha1)
+                        .set_slot(Slot::Slot2),
+                )
+                .context("HMAC Failed")?;
 
-            let hmac_result = yubi.challenge_response_hmac(
-                passopt.as_bytes(),
-                Config::default()
-                    .set_vendor_id(device.vendor_id)
-                    .set_product_id(device.product_id)
-                    .set_variable_size(true)
-                    .set_mode(Mode::Sha1)
-                    .set_slot(Slot::Slot2),
-            )?;
-
-            let mut ctx = copypasta_ext::x11_fork::ClipboardContext::new().unwrap();
+            let mut ctx = copypasta_ext::wayland_bin::ClipboardContext::new().unwrap();
             ctx.set_contents(encode_password(
                 hmac_result.deref(),
                 passstruct.length,
@@ -295,13 +319,11 @@ fn main() -> anyhow::Result<()> {
             )?)
             .unwrap();
 
-            keyboard.key_down(enigo::Key::Control);
-            keyboard.key_click(enigo::Key::Layout('v'));
-            keyboard.key_up(enigo::Key::Control);
-
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::io::stdin().read_line(&mut String::new());
 
             ctx.set_contents(passstruct.username.to_owned()).unwrap();
+
+            std::io::stdin().read_line(&mut String::new());
         }
         Opts::Notes { title } => {
             println!(
@@ -379,6 +401,41 @@ fn main() -> anyhow::Result<()> {
                 .context("Cannot find the server keyfile")?,
             )?;
         }
+        Opts::Export => {
+            let passwords = get_passwords()?;
+            let mut items = BitwardenJson { items: Vec::new() };
+            for (mut key, value) in passwords.into_iter() {
+                let mut yubi = Yubico::new();
+                let device = yubi.find_yubikey()?;
+                key.push('\n');
+                let hmac_result = yubi
+                    .challenge_response_hmac(
+                        key.as_bytes(),
+                        Config::default()
+                            .set_vendor_id(device.vendor_id)
+                            .set_product_id(device.product_id)
+                            .set_variable_size(true)
+                            .set_mode(Mode::Sha1)
+                            .set_slot(Slot::Slot2),
+                    )
+                    .context("HMAC Failed")?;
+                let password = encode_password(
+                    hmac_result.deref(),
+                    value.length,
+                    value.cut,
+                    value.no_symbols,
+                )?;
+                items.items.push(BitwardenItem {
+                    _type: 1,
+                    name: key,
+                    login: BitwardenLogin {
+                        username: value.username,
+                        password,
+                    },
+                });
+            }
+            serde_json::to_writer(std::fs::File::create("export.json").unwrap(), &items).unwrap();
+        }
     }
     Ok(())
 }
@@ -393,10 +450,10 @@ fn get_passwords() -> anyhow::Result<HashMap<String, PasswordOpts>> {
         ))?
         .as_slice(),
     )?;
-    let keybox = server_keybox!(opts);
     let mut input;
     match &opts.server {
         Some(server) => {
+            let keybox = server_keybox!(opts);
             let rev: u32 = String::from_utf8(decrypt_message(
                 reqwest::blocking::Client::new()
                     .post(format!("{}/request", server))
@@ -470,7 +527,6 @@ fn encrypt_passwords(
     passwords: HashMap<String, PasswordOpts>,
     opts: YuPassOpts,
 ) -> anyhow::Result<()> {
-    let keybox = server_keybox!(opts);
     let mut output = Vec::new();
     let mut ctx = gpgme::Context::from_protocol(Protocol::OpenPgp)?;
     ctx.set_armor(true);
@@ -489,6 +545,7 @@ fn encrypt_passwords(
         &output,
     )?;
     if let Some(server) = &opts.server {
+        let keybox = server_keybox!(opts);
         let code = reqwest::blocking::Client::new()
             .post(format!("{}/upload", server))
             .body(encrypt_message(output.as_slice(), &keybox)?)
@@ -555,15 +612,15 @@ fn pubkey_slice(s: &[u8]) -> [u8; 32] {
     a
 }
 
-fn encrypt_message(message: &[u8], keybox: &crypto_box::Box) -> anyhow::Result<Vec<u8>> {
-    let nonce = crypto_box::generate_nonce(&mut OsRng);
+fn encrypt_message(message: &[u8], keybox: &crypto_box::ChaChaBox) -> anyhow::Result<Vec<u8>> {
+    let nonce = crypto_box::ChaChaBox::generate_nonce(&mut OsRng);
     Ok(bincode::serialize(&ServerMessage {
         nonce: nonce.into(),
         message: keybox.encrypt(&nonce, message).unwrap(),
     })?)
 }
 
-fn decrypt_message(message: &[u8], keybox: &crypto_box::Box) -> anyhow::Result<Vec<u8>> {
+fn decrypt_message(message: &[u8], keybox: &crypto_box::ChaChaBox) -> anyhow::Result<Vec<u8>> {
     let des_message: ServerMessage = bincode::deserialize(message)?;
     Ok(keybox.decrypt(&des_message.nonce.into(), des_message.message.as_slice())?)
 }
