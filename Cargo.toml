@@ -21,6 +21,7 @@ gpgme = "*"
 const_colors = "*"
 anyhow = "*"
 serde_json = "1.0.87"
+indicatif = "0.17.1"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "4.2.1"

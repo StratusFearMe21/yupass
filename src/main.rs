@@ -4,6 +4,7 @@ use crypto_box::{
     aead::{Aead, AeadCore},
     PublicKey, SecretKey,
 };
+use indicatif::ProgressIterator;
 use rand_core::OsRng;
 use reqwest::StatusCode;
 use std::{
@@ -404,7 +405,9 @@ fn main() -> anyhow::Result<()> {
         Opts::Export => {
             let passwords = get_passwords()?;
             let mut items = BitwardenJson { items: Vec::new() };
-            for (mut key, value) in passwords.into_iter() {
+            println!("Hold down the contact of your Yubikey to export");
+            let len = passwords.len() as u64;
+            for (mut key, value) in passwords.into_iter().progress_count(len) {
                 let mut yubi = Yubico::new();
                 let device = yubi.find_yubikey()?;
                 key.push('\n');
