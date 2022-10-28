@@ -407,9 +407,9 @@ fn main() -> anyhow::Result<()> {
             let mut items = BitwardenJson { items: Vec::new() };
             println!("Hold down the contact of your Yubikey to export");
             let len = passwords.len() as u64;
+            let mut yubi = Yubico::new();
+            let device = yubi.find_yubikey()?;
             for (mut key, value) in passwords.into_iter().progress_count(len) {
-                let mut yubi = Yubico::new();
-                let device = yubi.find_yubikey()?;
                 key.push('\n');
                 let hmac_result = yubi
                     .challenge_response_hmac(
